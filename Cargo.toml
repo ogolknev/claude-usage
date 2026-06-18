@@ -1,6 +1,6 @@
 [package]
 name = "claude-usage"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2021"
 description = "Menu-bar индикатор лимитов и расхода Claude для macOS"
 

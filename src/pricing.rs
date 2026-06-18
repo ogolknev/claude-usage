@@ -25,8 +25,10 @@ const CW_5M: f64 = 1.25;
 const CW_1H: f64 = 2.0;
 const CR: f64 = 0.1;
 
+// jsdelivr-зеркало того же файла LiteLLM: быстрый CDN (raw.githubusercontent
+// для 1.5MB регулярно отваливается по таймауту).
 const LITELLM_URL: &str =
-    "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
+    "https://cdn.jsdelivr.net/gh/BerriAI/litellm@main/model_prices_and_context_window.json";
 
 /// Вшитые официальные тарифы (фолбэк, если ещё не обновлялись из сети).
 fn defaults() -> Prices {
@@ -93,7 +95,15 @@ pub fn cost(prices: &Prices, model: &str, inp: u64, out: u64, c5m: u64, c1h: u64
 
 /// Обновляет `prices.json` из LiteLLM (вызывается воркером раз в сутки).
 /// Тихо ничего не делает при сетевой ошибке — остаются прежние/вшитые цены.
-pub fn refresh(client: &reqwest::blocking::Client) {
+/// Свой клиент с увеличенным таймаутом: файл ~1.5MB.
+pub fn refresh() {
+    let Ok(client) = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .user_agent("claude-usage-menubar/0.1")
+        .build()
+    else {
+        return;
+    };
     let Ok(resp) = client.get(LITELLM_URL).send() else {
         return;
     };

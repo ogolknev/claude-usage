@@ -217,7 +217,7 @@ fn worker(proxy: EventLoopProxy<UserEvent>, refresh_rx: Receiver<()>) {
         }
         // После первой отрисовки обновляем тарифы (не задерживая старт кольца).
         if tick % PRICE_REFRESH_EVERY == 0 {
-            pricing::refresh(&client);
+            pricing::refresh();
         }
         tick += 1;
 
