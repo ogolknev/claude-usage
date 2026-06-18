@@ -42,9 +42,16 @@ Touch ID подтверждение можно приложить пальцем
 ./target/release/claude-usage --probe
 ```
 
-## Автозапуск (по желанию)
+## Автозапуск
 
-System Settings → General → Login Items → добавить `Claude Usage.app`.
+```sh
+bash bundle/autostart.sh on    # поставить LaunchAgent и запустить сейчас
+bash bundle/autostart.sh off   # убрать
+```
+
+Ставит `~/Library/LaunchAgents/com.local.claude-usage.plist` (RunAtLoad) — приложение
+стартует при входе в систему. Если выйти через меню «Выход», обратно до следующего
+входа не поднимется. Альтернатива вручную: System Settings → General → Login Items.
 
 ## Оценка стоимости ($)
 
