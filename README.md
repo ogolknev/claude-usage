@@ -9,6 +9,26 @@
 Меню по клику: сессия / неделя / модельный лимит с временем сброса, локальный
 расход за сегодня и неделю, «Обновить», «Открыть claude.ai/usage», «Выход».
 
+## Установка
+
+Через Homebrew:
+
+```sh
+brew install --cask ogolknev/tap/claude-usage
+```
+
+Или вручную: скачай `.dmg` из [релизов](https://github.com/ogolknev/claude-usage/releases),
+открой, перетащи `Claude Usage.app` в Applications.
+
+При первом запуске один раз разреши доступ к Keychain-итему `Claude Code-credentials`
+(«Всегда разрешать» / Touch ID). Автозапуск при входе: `bash bundle/autostart.sh on`.
+
+> Аппка подписана ad-hoc (без нотаризации Apple). Через cask карантин снимается сам;
+> при ручной установке из `.dmg`, если Gatekeeper ругнётся:
+> `xattr -dr com.apple.quarantine "/Applications/Claude Usage.app"`.
+
+Требования: Apple Silicon, установленный и авторизованный Claude Code.
+
 ## Как это работает
 
 - **Лимиты** — `GET https://api.anthropic.com/api/oauth/usage` с OAuth-токеном
@@ -17,16 +37,19 @@
   (`session` / `weekly_all` / `weekly_scoped`). См. `src/limits.rs`.
 - **Локальный расход** — суммирование `message.usage` из `~/.claude/projects/*/*.jsonl`
   по окнам 5ч / сегодня / 7 дней (фильтр по mtime). Сетью не пользуется. См. `src/local.rs`.
-- Опрос лимитов раз в 60с, локальный расход — раз в 5 мин. При сетевой ошибке
-  панель деградирует к локальным токенам и не падает.
+- Опрос лимитов раз в 180с с бэкоффом при 429 (уважаем `Retry-After`). Последние
+  удачные лимиты кэшируются на диск (`~/Library/Caches/com.local.claude-usage`),
+  поэтому кольцо показывается сразу при старте и переживает 429/перезапуск. При
+  полной недоступности — деградация к локальным токенам.
 
 v1 **не рефрешит** OAuth-токен сам, чтобы не сломать креды Claude Code — если
 токен истёк, ждёт, пока Claude Code обновит его при следующем запуске.
 
-## Сборка и запуск
+## Сборка из исходников
 
 ```sh
 bash bundle/build-app.sh          # release + упаковка в «Claude Usage.app» + ad-hoc подпись
+bash bundle/build-dmg.sh          # (опционально) DMG-инсталлятор
 open "Claude Usage.app"
 ```
 

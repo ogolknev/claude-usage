@@ -7,8 +7,12 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LABEL="com.local.claude-usage"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
-BIN="$ROOT/Claude Usage.app/Contents/MacOS/claude-usage"
 UID_NUM="$(id -u)"
+
+# Предпочитаем установленную копию (brew/DMG → /Applications), иначе локальную сборку.
+APP_INSTALLED="/Applications/Claude Usage.app/Contents/MacOS/claude-usage"
+APP_LOCAL="$ROOT/Claude Usage.app/Contents/MacOS/claude-usage"
+if [ -x "$APP_INSTALLED" ]; then BIN="$APP_INSTALLED"; else BIN="$APP_LOCAL"; fi
 
 case "${1:-on}" in
   on)
