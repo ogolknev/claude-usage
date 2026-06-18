@@ -1,3 +1,4 @@
+mod icon;
 mod keychain;
 mod limits;
 mod local;
@@ -89,6 +90,17 @@ fn main() {
         *control_flow = ControlFlow::Wait;
         match event {
             Event::UserEvent(UserEvent::State(state)) => {
+                match tray::session_percent(&state) {
+                    Some(p) => {
+                        let (rgba, w, h) = icon::ring_rgba(p);
+                        if let Ok(ic) = tray_icon::Icon::from_rgba(rgba, w, h) {
+                            let _ = tray.set_icon(Some(ic));
+                        }
+                    }
+                    None => {
+                        let _ = tray.set_icon(None);
+                    }
+                }
                 let _ = tray.set_title(Some(tray::title_for(&state)));
                 let _ = tray.set_tooltip(Some(tray::tooltip_for(&state)));
                 tray::apply_menu(

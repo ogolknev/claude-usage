@@ -2,21 +2,18 @@ use crate::model::{LimitEntry, LocalUsage, UsageState};
 use chrono::Utc;
 use tray_icon::menu::MenuItem;
 
-/// Текст в самой панели — компактно: `5h 6% · 7d 8%`. При недоступности API —
-/// деградирует к токенам за 5ч из локальных логов.
+/// Процент сессионного (5ч) лимита — для кольца-иконки. None, если API недоступен.
+pub fn session_percent(s: &UsageState) -> Option<f64> {
+    s.limits.as_ref().and_then(|l| l.session.as_ref()).map(|e| e.percent)
+}
+
+/// Текст рядом с кольцом — только процент 5-часового лимита, без подписи
+/// (что это 5ч — ясно из контекста). Недельный лимит живёт в выпадающем меню.
+/// При недоступности API — деградирует к токенам за 5ч из локальных логов.
 pub fn title_for(s: &UsageState) -> String {
-    if let Some(l) = &s.limits {
-        let sess = l.session.as_ref().map(|e| e.percent).unwrap_or(0.0);
-        let wk = l.weekly.as_ref().map(|e| e.percent).unwrap_or(0.0);
-        // Предупреждение по реальному severity API, с порогом по проценту как фолбэк.
-        let warn = if l.entries.iter().any(|e| is_alarming(e)) {
-            "⚠ "
-        } else {
-            ""
-        };
-        format!("{warn}5h {}% · 7d {}%", round(sess), round(wk))
-    } else {
-        format!("⌁ {} (5ч)", human_tokens(s.local.window5h_tokens))
+    match session_percent(s) {
+        Some(p) => format!("{}%", round(p)),
+        None => format!("⌁ {}", human_tokens(s.local.window5h_tokens)),
     }
 }
 
