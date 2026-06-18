@@ -1,0 +1,131 @@
+use crate::model::{LimitEntry, LocalUsage, UsageState};
+use chrono::Utc;
+use tray_icon::menu::MenuItem;
+
+/// Текст в самой панели — компактно: `5h 6% · 7d 8%`. При недоступности API —
+/// деградирует к токенам за 5ч из локальных логов.
+pub fn title_for(s: &UsageState) -> String {
+    if let Some(l) = &s.limits {
+        let sess = l.session.as_ref().map(|e| e.percent).unwrap_or(0.0);
+        let wk = l.weekly.as_ref().map(|e| e.percent).unwrap_or(0.0);
+        // Предупреждение по реальному severity API, с порогом по проценту как фолбэк.
+        let warn = if l.entries.iter().any(|e| is_alarming(e)) {
+            "⚠ "
+        } else {
+            ""
+        };
+        format!("{warn}5h {}% · 7d {}%", round(sess), round(wk))
+    } else {
+        format!("⌁ {} (5ч)", human_tokens(s.local.window5h_tokens))
+    }
+}
+
+pub fn tooltip_for(s: &UsageState) -> String {
+    match &s.limits_err {
+        Some(e) => format!("Claude Usage — лимиты недоступны: {e}"),
+        None => format!("Claude Usage — обновлено {}", s.fetched_at.format("%H:%M:%S")),
+    }
+}
+
+pub struct MenuHandles<'a> {
+    pub session: &'a MenuItem,
+    pub weekly: &'a MenuItem,
+    pub scoped: &'a MenuItem,
+    pub local: &'a MenuItem,
+}
+
+pub fn apply_menu(s: &UsageState, h: &MenuHandles) {
+    match &s.limits {
+        Some(l) => {
+            h.session.set_text(line_for(l.session.as_ref(), "Сессия (5ч)"));
+            h.weekly.set_text(line_for(l.weekly.as_ref(), "Неделя"));
+            if let Some(sc) = l.scoped.iter().find(|e| e.percent > 0.0).or(l.scoped.first()) {
+                h.scoped.set_text(line_for(Some(sc), &sc.label));
+            } else {
+                h.scoped.set_text("Модельные лимиты: —");
+            }
+        }
+        None => {
+            let err = s.limits_err.as_deref().unwrap_or("недоступно");
+            h.session.set_text(format!("Лимиты: {err}"));
+            h.weekly.set_text("");
+            h.scoped.set_text("");
+        }
+    }
+    h.local.set_text(local_line(&s.local));
+}
+
+fn line_for(e: Option<&LimitEntry>, label: &str) -> String {
+    match e {
+        Some(e) => {
+            let dot = if e.is_active { "● " } else { "" };
+            let bang = if is_alarming(e) { " ⚠" } else { "" };
+            format!("{dot}{label}: {}%{bang} · {}", round(e.percent), reset_str(e))
+        }
+        None => format!("{label}: —"),
+    }
+}
+
+/// Лимит близок к исчерпанию: по severity из API (не "normal") или по проценту.
+fn is_alarming(e: &LimitEntry) -> bool {
+    (!e.severity.is_empty() && e.severity != "normal") || e.percent >= 80.0
+}
+
+fn reset_str(e: &LimitEntry) -> String {
+    let Some(reset) = e.resets_at else {
+        return "сброс ?".into();
+    };
+    let now = Utc::now();
+    let local = reset.with_timezone(&chrono::Local);
+    if reset <= now {
+        return format!("сброс {}", local.format("%H:%M"));
+    }
+    let mins = (reset - now).num_minutes();
+    let when = if mins >= 60 * 24 {
+        local.format("%a %H:%M").to_string()
+    } else {
+        local.format("%H:%M").to_string()
+    };
+    format!("сброс через {} ({when})", dur_str(mins))
+}
+
+fn dur_str(mins: i64) -> String {
+    if mins >= 60 {
+        let h = mins / 60;
+        let m = mins % 60;
+        if m == 0 {
+            format!("{h}ч")
+        } else {
+            format!("{h}ч {m}м")
+        }
+    } else {
+        format!("{mins}м")
+    }
+}
+
+fn local_line(u: &LocalUsage) -> String {
+    let cost = if crate::pricing::enabled() {
+        format!(" (~${:.2})", u.today_cost)
+    } else {
+        String::new()
+    };
+    format!(
+        "Расход: сегодня {}{cost} · неделя {}",
+        human_tokens(u.today_tokens),
+        human_tokens(u.week_tokens)
+    )
+}
+
+fn round(p: f64) -> i64 {
+    p.round() as i64
+}
+
+fn human_tokens(t: u64) -> String {
+    if t >= 1_000_000 {
+        format!("{:.1}M", t as f64 / 1_000_000.0)
+    } else if t >= 1_000 {
+        format!("{:.0}k", t as f64 / 1_000.0)
+    } else {
+        format!("{t}")
+    }
+}
