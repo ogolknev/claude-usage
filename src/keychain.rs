@@ -47,15 +47,12 @@ pub fn read_creds() -> Result<Creds, String> {
 
 const SERVICE: &str = "Claude Code-credentials";
 
+/// Читаем токен через системный `/usr/bin/security`, а не напрямую из нашего
+/// процесса. Это стабильный Apple-бинарь: доступ к итему выдаётся ему один раз
+/// («Всегда разрешать»/Touch ID в диалоге) и сохраняется навсегда — даже после
+/// пересборки приложения. Прямой доступ так не умеет: его ACL-запись привязана
+/// к подписи бинаря и слетает при каждом ребилде ad-hoc, вызывая новый промпт.
 fn read_secret() -> Result<Vec<u8>, String> {
-    // Прямое чтение из Keychain: ACL привязывается к нашему подписанному бинарю.
-    let account = std::env::var("USER").unwrap_or_default();
-    if !account.is_empty() {
-        if let Ok(v) = security_framework::passwords::get_generic_password(SERVICE, &account) {
-            return Ok(v);
-        }
-    }
-    // Фолбэк: `security` ищет item по одному service (без точного account).
     let out = std::process::Command::new("/usr/bin/security")
         .args(["find-generic-password", "-s", SERVICE, "-w"])
         .output()

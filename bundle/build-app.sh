@@ -15,9 +15,8 @@ mkdir -p "$APP/Contents/MacOS"
 cp "target/release/claude-usage" "$APP/Contents/MacOS/claude-usage"
 cp "bundle/Info.plist" "$APP/Contents/Info.plist"
 
-# Ad-hoc подпись. Замечание: cdhash меняется при каждой пересборке, поэтому
-# разрешение Keychain «Always Allow» придётся выдавать заново после ребилда.
-# Для постоянного ACL подпиши self-signed identity вместо «-».
+# Ad-hoc подпись. Доступ к Keychain не зависит от неё: токен читается через
+# системный /usr/bin/security, которому доступ выдаётся один раз и навсегда.
 codesign --force --sign - --identifier com.local.claude-usage "$APP" || true
 
 echo "Готово: $ROOT/$APP"

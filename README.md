@@ -30,10 +30,11 @@ bash bundle/build-app.sh          # release + упаковка в «Claude Usage
 open "Claude Usage.app"
 ```
 
-При **первом запуске** macOS спросит доступ к Keychain-итему `Claude Code-credentials`
-— нажми «Always Allow». (Из-за ad-hoc подписи запрос повторится после каждой
-пересборки; для постоянного доступа подпиши self-signed identity вместо `-` в
-`bundle/build-app.sh`.)
+Токен читается через системный `/usr/bin/security`. Один раз macOS спросит доступ
+к Keychain-итему `Claude Code-credentials` — нажми «Всегда разрешать» (на Mac с
+Touch ID подтверждение можно приложить пальцем). Дальше промптов не будет — даже
+после пересборки приложения, потому что доступ выдан стабильному системному
+бинарю `security`, а не нашему ad-hoc-подписанному приложению.
 
 Диагностика без GUI:
 
