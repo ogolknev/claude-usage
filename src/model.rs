@@ -40,4 +40,6 @@ pub struct UsageState {
     pub limits_err: Option<String>,
     pub local: LocalUsage,
     pub fetched_at: DateTime<Local>,
+    /// Время последнего УСПЕШНОГО получения лимитов (None — ещё ни разу).
+    pub last_ok: Option<DateTime<Local>>,
 }

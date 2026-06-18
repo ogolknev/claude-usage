@@ -49,6 +49,7 @@ fn main() {
     let i_weekly = MenuItem::new("Неделя: загрузка…", false, None);
     let i_scoped = MenuItem::new("Модельные лимиты: …", false, None);
     let i_local = MenuItem::new("Расход: …", false, None);
+    let i_updated = MenuItem::new("Обновлено: —", false, None);
     let i_refresh = MenuItem::new("Обновить", true, None);
     let i_open = MenuItem::new("Открыть claude.ai/usage", true, None);
     let i_quit = MenuItem::new("Выход", true, None);
@@ -59,6 +60,7 @@ fn main() {
     let _ = menu.append(&i_scoped);
     let _ = menu.append(&PredefinedMenuItem::separator());
     let _ = menu.append(&i_local);
+    let _ = menu.append(&i_updated);
     let _ = menu.append(&PredefinedMenuItem::separator());
     let _ = menu.append(&i_refresh);
     let _ = menu.append(&i_open);
@@ -110,6 +112,7 @@ fn main() {
                         weekly: &i_weekly,
                         scoped: &i_scoped,
                         local: &i_local,
+                        updated: &i_updated,
                     },
                 );
             }
@@ -150,9 +153,13 @@ fn worker(proxy: EventLoopProxy<UserEvent>, refresh_rx: Receiver<()>) {
     let client = limits::client();
     let mut tick: u64 = 0;
     let mut last_local = LocalUsage::default();
+    let mut last_ok: Option<chrono::DateTime<chrono::Local>> = None;
 
     loop {
         let limits = limits::fetch(&client);
+        if limits.is_ok() {
+            last_ok = Some(chrono::Local::now());
+        }
         if tick % LOCAL_EVERY == 0 {
             last_local = local::compute(&h);
         }
@@ -161,6 +168,7 @@ fn worker(proxy: EventLoopProxy<UserEvent>, refresh_rx: Receiver<()>) {
             limits_err: limits.as_ref().err().cloned(),
             local: last_local.clone(),
             fetched_at: chrono::Local::now(),
+            last_ok,
         };
         if proxy.send_event(UserEvent::State(Box::new(state))).is_err() {
             break; // цикл событий закрыт — выходим

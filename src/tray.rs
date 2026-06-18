@@ -29,6 +29,7 @@ pub struct MenuHandles<'a> {
     pub weekly: &'a MenuItem,
     pub scoped: &'a MenuItem,
     pub local: &'a MenuItem,
+    pub updated: &'a MenuItem,
 }
 
 pub fn apply_menu(s: &UsageState, h: &MenuHandles) {
@@ -50,6 +51,10 @@ pub fn apply_menu(s: &UsageState, h: &MenuHandles) {
         }
     }
     h.local.set_text(local_line(&s.local));
+    h.updated.set_text(match s.last_ok {
+        Some(t) => format!("Обновлено: {}", t.format("%H:%M:%S")),
+        None => "Обновлено: —".to_string(),
+    });
 }
 
 fn line_for(e: Option<&LimitEntry>, label: &str) -> String {
