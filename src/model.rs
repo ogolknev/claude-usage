@@ -25,11 +25,14 @@ pub struct Limits {
 }
 
 /// Локальный расход из JSONL-логов Claude Code (фолбэк, считается без сети).
+/// `io` = input+output (осмысленный расход), `cache` = чтение/запись кэша отдельно.
 #[derive(Clone, Debug, Default)]
 pub struct LocalUsage {
-    pub window5h_tokens: u64,
-    pub today_tokens: u64,
-    pub week_tokens: u64,
+    pub window5h_io: u64,
+    pub today_io: u64,
+    pub week_io: u64,
+    pub today_cache: u64,
+    pub week_cache: u64,
     /// Оценка $ — ненулевая только если в pricing.rs заполнены цены.
     pub today_cost: f64,
     pub week_cost: f64,

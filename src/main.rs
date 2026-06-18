@@ -149,8 +149,8 @@ fn probe() {
     }
     let u = local::compute(&home());
     println!(
-        "local: today={} 5h={} week={} (tok)",
-        u.today_tokens, u.window5h_tokens, u.week_tokens
+        "local вх+вых: today={} 5h={} week={} | кэш: today={} week={} (tok)",
+        u.today_io, u.window5h_io, u.week_io, u.today_cache, u.week_cache
     );
 }
 

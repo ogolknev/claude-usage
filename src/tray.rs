@@ -14,7 +14,7 @@ pub fn title_for(s: &UsageState) -> String {
     match session_percent(s) {
         // Формат как у индикатора заряда батареи в строке меню: «NN %».
         Some(p) => format!("{} %", round(p)),
-        None => format!("⌁ {}", human_tokens(s.local.window5h_tokens)),
+        None => format!("⌁ {}", human_tokens(s.local.window5h_io)),
     }
 }
 
@@ -114,10 +114,12 @@ fn local_line(u: &LocalUsage) -> String {
     } else {
         String::new()
     };
+    // Основное — input+output; чтение кэша на порядки больше и показывается отдельно.
     format!(
-        "Расход: сегодня {}{cost} · неделя {}",
-        human_tokens(u.today_tokens),
-        human_tokens(u.week_tokens)
+        "Расход вх+вых: сегодня {}{cost} · неделя {} · кэш сегодня {}",
+        human_tokens(u.today_io),
+        human_tokens(u.week_io),
+        human_tokens(u.today_cache),
     )
 }
 

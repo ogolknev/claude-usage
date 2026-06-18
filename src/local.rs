@@ -1,13 +1,19 @@
 use crate::model::LocalUsage;
 use crate::pricing;
 use chrono::{DateTime, Duration, Local, TimeZone, Utc};
+use std::collections::HashSet;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 /// Считает расход токенов за окна 5ч / сегодня / 7д из JSONL-логов Claude Code.
-/// Сетью не пользуется. Файлы фильтруются по mtime, чтобы не читать весь архив.
+/// Сетью не пользуется. Файлы фильтруются по mtime.
+///
+/// Важно: «вх+вых» (input+output) — это осмысленный расход. cache_read (чтение
+/// закэшированного контекста) считается отдельно: его на порядки больше, и в
+/// «расход» он не входит. Записи дедуплицируются по `message.id`, иначе одни и
+/// те же сообщения из нескольких файлов (resume/форк сессий) считаются повторно.
 pub fn compute(home: &Path) -> LocalUsage {
     let projects = home.join(".claude/projects");
     let now = Utc::now();
@@ -20,8 +26,9 @@ pub fn compute(home: &Path) -> LocalUsage {
     collect_jsonl(&projects, cutoff, &mut files);
 
     let mut u = LocalUsage::default();
+    let mut seen: HashSet<String> = HashSet::new();
     for f in files {
-        accumulate_file(&f, w5h, w7d, today_start, &mut u);
+        accumulate_file(&f, w5h, w7d, today_start, &mut u, &mut seen);
     }
     u
 }
@@ -32,6 +39,7 @@ fn accumulate_file(
     w7d: DateTime<Utc>,
     today_start: DateTime<Utc>,
     u: &mut LocalUsage,
+    seen: &mut HashSet<String>,
 ) {
     let Ok(file) = fs::File::open(path) else {
         return;
@@ -54,30 +62,41 @@ fn accumulate_file(
         if ts < w7d {
             continue;
         }
-        let Some(usage) = v.get("message").and_then(|m| m.get("usage")) else {
+        let message = v.get("message");
+        let Some(usage) = message.and_then(|m| m.get("usage")) else {
             continue;
         };
+
+        // Дедуп: одно и то же сообщение встречается в нескольких файлах.
+        if let Some(id) = message.and_then(|m| m.get("id")).and_then(|x| x.as_str()) {
+            if !seen.insert(id.to_string()) {
+                continue;
+            }
+        }
+
         let inp = field(usage, "input_tokens");
         let out = field(usage, "output_tokens");
         let cw = field(usage, "cache_creation_input_tokens");
         let cr = field(usage, "cache_read_input_tokens");
-        let total = inp + out + cw + cr;
-        let model = v
-            .get("message")
+        let io = inp + out;
+        let cache = cw + cr;
+        let model = message
             .and_then(|m| m.get("model"))
             .and_then(|x| x.as_str())
             .or_else(|| v.get("model").and_then(|x| x.as_str()))
             .unwrap_or("");
         let cost = pricing::cost(model, inp, out, cw, cr);
 
-        u.week_tokens += total;
+        u.week_io += io;
+        u.week_cache += cache;
         u.week_cost += cost;
         if ts >= today_start {
-            u.today_tokens += total;
+            u.today_io += io;
+            u.today_cache += cache;
             u.today_cost += cost;
         }
         if ts >= w5h {
-            u.window5h_tokens += total;
+            u.window5h_io += io;
         }
     }
 }
