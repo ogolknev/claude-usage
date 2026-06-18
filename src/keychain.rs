@@ -47,22 +47,34 @@ pub fn read_creds() -> Result<Creds, String> {
 
 const SERVICE: &str = "Claude Code-credentials";
 
-/// Читаем токен через системный `/usr/bin/security`, а не напрямую из нашего
-/// процесса. Это стабильный Apple-бинарь: доступ к итему выдаётся ему один раз
-/// («Всегда разрешать»/Touch ID в диалоге) и сохраняется навсегда — даже после
-/// пересборки приложения. Прямой доступ так не умеет: его ACL-запись привязана
-/// к подписи бинаря и слетает при каждом ребилде ad-hoc, вызывая новый промпт.
+/// Читаем токен: сначала из macOS Keychain через системный `/usr/bin/security`
+/// (стабильный Apple-бинарь — доступ выдаётся ему один раз и навсегда), затем
+/// фолбэк на файл `~/.claude/.credentials.json` (Claude Code хранит креды там,
+/// если keychain недоступен). Если нет ни того, ни другого — значит в Claude
+/// Code нет OAuth-токена (не залогинен через подписку).
 fn read_secret() -> Result<Vec<u8>, String> {
-    let out = std::process::Command::new("/usr/bin/security")
+    // 1) Keychain.
+    if let Ok(out) = std::process::Command::new("/usr/bin/security")
         .args(["find-generic-password", "-s", SERVICE, "-w"])
         .output()
-        .map_err(|e| format!("security: {e}"))?;
-    if !out.status.success() {
-        return Err("keychain item недоступен".into());
+    {
+        if out.status.success() {
+            let mut s = out.stdout;
+            while s.last() == Some(&b'\n') {
+                s.pop();
+            }
+            if !s.is_empty() {
+                return Ok(s);
+            }
+        }
     }
-    let mut s = out.stdout;
-    while s.last() == Some(&b'\n') {
-        s.pop();
+    // 2) Файловый фолбэк.
+    let home = std::env::var("HOME").unwrap_or_default();
+    let file = std::path::Path::new(&home).join(".claude/.credentials.json");
+    if let Ok(data) = std::fs::read(&file) {
+        if !data.is_empty() {
+            return Ok(data);
+        }
     }
-    Ok(s)
+    Err("креды Claude Code не найдены — залогинься в Claude Code".into())
 }
