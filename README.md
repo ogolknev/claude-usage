@@ -35,8 +35,11 @@ brew install --cask ogolknev/tap/claude-usage
   Claude Code. Токен читается из macOS Keychain (item `Claude Code-credentials`),
   заголовок `anthropic-beta: oauth-2025-04-20`. Парсится массив `limits[]`
   (`session` / `weekly_all` / `weekly_scoped`). См. `src/limits.rs`.
-- **Локальный расход** — суммирование `message.usage` из `~/.claude/projects/*/*.jsonl`
-  по окнам 5ч / сегодня / 7 дней (фильтр по mtime). Сетью не пользуется. См. `src/local.rs`.
+- **Локальный расход** — из `~/.claude/projects/*/*.jsonl` по окнам 5ч / сегодня / 7 дней.
+  Основная цифра — **input+output**; чтение кэша (`cache_read`, на порядки больше)
+  показывается отдельно. Записи дедуплицируются по `message.id` (одни и те же
+  сообщения встречаются в нескольких файлах при resume/форке сессий). Сетью не
+  пользуется. См. `src/local.rs`.
 - Опрос лимитов раз в 180с с бэкоффом при 429 (уважаем `Retry-After`). Последние
   удачные лимиты кэшируются на диск (`~/Library/Caches/com.local.claude-usage`),
   поэтому кольцо показывается сразу при старте и переживает 429/перезапуск. При
