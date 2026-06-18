@@ -20,7 +20,11 @@ use tray_icon::TrayIconBuilder;
 use model::{LocalUsage, UsageState};
 
 const USAGE_PAGE: &str = "https://claude.ai/settings/usage";
-const POLL_SECS: u64 = 60;
+/// Базовый интервал опроса лимитов. Эндпоинт чувствителен к частоте (429),
+/// данные меняются небыстро — 3 минуты достаточно.
+const POLL_SECS: u64 = 180;
+/// Потолок экспоненциального бэкоффа при 429 — 30 минут.
+const BACKOFF_MAX_SECS: u64 = 1800;
 /// Локальный расход тяжелее опроса лимитов, поэтому считаем реже (раз в 5 циклов).
 const LOCAL_EVERY: u64 = 5;
 
@@ -139,7 +143,7 @@ fn probe() {
                 println!("  {:<16} {:>3}%  reset={:?}", e.kind, e.percent as i64, e.resets_at);
             }
         }
-        Err(e) => println!("limits ERR: {e}"),
+        Err(e) => println!("limits ERR: {}", e.msg),
     }
     let u = local::compute(&home());
     println!(
@@ -154,18 +158,37 @@ fn worker(proxy: EventLoopProxy<UserEvent>, refresh_rx: Receiver<()>) {
     let mut tick: u64 = 0;
     let mut last_local = LocalUsage::default();
     let mut last_ok: Option<chrono::DateTime<chrono::Local>> = None;
+    let mut last_good: Option<model::Limits> = None;
+    let mut backoff = POLL_SECS;
 
     loop {
-        let limits = limits::fetch(&client);
-        if limits.is_ok() {
-            last_ok = Some(chrono::Local::now());
+        let result = limits::fetch(&client);
+        let mut wait = POLL_SECS;
+        match &result {
+            Ok(l) => {
+                last_good = Some(l.clone());
+                last_ok = Some(chrono::Local::now());
+                backoff = POLL_SECS;
+            }
+            Err(e) if e.rate_limited => {
+                // При 429 уважаем Retry-After, иначе растущий бэкофф — чтобы не
+                // долбить эндпоинт и не углублять rate-limit.
+                wait = e
+                    .retry_after
+                    .map(|d| d.as_secs())
+                    .unwrap_or(backoff)
+                    .max(POLL_SECS);
+                backoff = backoff.saturating_mul(2).min(BACKOFF_MAX_SECS);
+            }
+            Err(_) => {}
         }
         if tick % LOCAL_EVERY == 0 {
             last_local = local::compute(&h);
         }
         let state = UsageState {
-            limits: limits.as_ref().ok().cloned(),
-            limits_err: limits.as_ref().err().cloned(),
+            // Держим последние удачные лимиты, чтобы кольцо не пропадало при 429.
+            limits: last_good.clone(),
+            limits_err: result.as_ref().err().map(|e| e.msg.clone()),
             local: last_local.clone(),
             fetched_at: chrono::Local::now(),
             last_ok,
@@ -175,8 +198,11 @@ fn worker(proxy: EventLoopProxy<UserEvent>, refresh_rx: Receiver<()>) {
         }
         tick += 1;
 
-        match refresh_rx.recv_timeout(Duration::from_secs(POLL_SECS)) {
-            Ok(()) => tick = 0, // ручное «Обновить» — пересчитать и локальный расход
+        match refresh_rx.recv_timeout(Duration::from_secs(wait)) {
+            Ok(()) => {
+                tick = 0; // ручное «Обновить» — пересчитать и локальный расход
+                backoff = POLL_SECS;
+            }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break,
         }

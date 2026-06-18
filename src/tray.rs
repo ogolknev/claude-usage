@@ -52,9 +52,11 @@ pub fn apply_menu(s: &UsageState, h: &MenuHandles) {
         }
     }
     h.local.set_text(local_line(&s.local));
-    h.updated.set_text(match s.last_ok {
-        Some(t) => format!("Обновлено: {}", t.format("%H:%M:%S")),
-        None => "Обновлено: —".to_string(),
+    h.updated.set_text(match (&s.last_ok, &s.limits_err) {
+        (Some(t), Some(err)) => format!("Обновлено: {} · {err}", t.format("%H:%M:%S")),
+        (Some(t), None) => format!("Обновлено: {}", t.format("%H:%M:%S")),
+        (None, Some(err)) => format!("Ошибка: {err}"),
+        (None, None) => "Обновлено: —".to_string(),
     });
 }
 

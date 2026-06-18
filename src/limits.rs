@@ -2,6 +2,25 @@ use crate::keychain;
 use crate::model::{LimitEntry, Limits};
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
+use std::time::Duration;
+
+/// Ошибка получения лимитов с данными для бэкоффа.
+#[derive(Clone)]
+pub struct FetchErr {
+    pub msg: String,
+    pub retry_after: Option<Duration>,
+    pub rate_limited: bool,
+}
+
+impl FetchErr {
+    fn plain(msg: impl Into<String>) -> Self {
+        Self {
+            msg: msg.into(),
+            retry_after: None,
+            rate_limited: false,
+        }
+    }
+}
 
 // Эндпоинт и константы подтверждены из бинаря Claude Code (см. план).
 const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
@@ -47,10 +66,12 @@ struct ModelScope {
     display_name: Option<String>,
 }
 
-pub fn fetch(client: &reqwest::blocking::Client) -> Result<Limits, String> {
-    let creds = keychain::read_creds()?;
+pub fn fetch(client: &reqwest::blocking::Client) -> Result<Limits, FetchErr> {
+    let creds = keychain::read_creds().map_err(FetchErr::plain)?;
     if creds.is_expired() {
-        return Err("токен истёк (обновится при следующем запуске Claude Code)".into());
+        return Err(FetchErr::plain(
+            "токен истёк (обновится при следующем запуске Claude Code)",
+        ));
     }
     let resp = client
         .get(USAGE_URL)
@@ -58,13 +79,25 @@ pub fn fetch(client: &reqwest::blocking::Client) -> Result<Limits, String> {
         .header("anthropic-beta", BETA)
         .header("content-type", "application/json")
         .send()
-        .map_err(|e| format!("request: {}", err_chain(&e)))?;
+        .map_err(|e| FetchErr::plain(format!("request: {}", err_chain(&e))))?;
     let status = resp.status();
     if !status.is_success() {
-        return Err(format!("HTTP {}", status.as_u16()));
+        let code = status.as_u16();
+        // Retry-After (секунды) — сколько сервер просит подождать перед повтором.
+        let retry_after = resp
+            .headers()
+            .get("retry-after")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.trim().parse::<u64>().ok())
+            .map(Duration::from_secs);
+        return Err(FetchErr {
+            msg: format!("HTTP {code}"),
+            retry_after,
+            rate_limited: code == 429,
+        });
     }
-    let body = resp.text().map_err(|e| format!("body: {e}"))?;
-    parse(&body)
+    let body = resp.text().map_err(|e| FetchErr::plain(format!("body: {e}")))?;
+    parse(&body).map_err(FetchErr::plain)
 }
 
 pub fn parse(body: &str) -> Result<Limits, String> {
