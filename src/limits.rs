@@ -1,3 +1,4 @@
+use crate::auth;
 use crate::keychain;
 use crate::model::{LimitEntry, Limits};
 use chrono::{DateTime, Utc};
@@ -67,11 +68,23 @@ struct ModelScope {
 }
 
 pub fn fetch(client: &reqwest::blocking::Client) -> Result<Limits, FetchErr> {
-    let creds = keychain::read_creds().map_err(FetchErr::plain)?;
+    let mut creds = keychain::read_creds().map_err(FetchErr::plain)?;
     if creds.is_expired() {
-        return Err(FetchErr::plain(
-            "токен истёк (обновится при следующем запуске Claude Code)",
-        ));
+        match creds.source {
+            // Наш токен рефрешим сами; токен Claude Code обновит он сам.
+            keychain::Source::Ours => {
+                let rt = creds
+                    .refresh_token
+                    .clone()
+                    .ok_or_else(|| FetchErr::plain("нет refresh-токена — войди заново"))?;
+                creds = auth::refresh(client, &rt).map_err(FetchErr::plain)?;
+            }
+            keychain::Source::ClaudeCode => {
+                return Err(FetchErr::plain(
+                    "токен истёк (обновится при следующем запуске Claude Code)",
+                ));
+            }
+        }
     }
     let resp = client
         .get(USAGE_URL)

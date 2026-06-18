@@ -1,3 +1,4 @@
+mod auth;
 mod cache;
 mod icon;
 mod keychain;
@@ -41,10 +42,27 @@ fn home() -> PathBuf {
     PathBuf::from(std::env::var("HOME").unwrap_or_default())
 }
 
+/// Системное уведомление (для результата входа).
+fn notify(title: &str, msg: &str) {
+    let script = format!("display notification {msg:?} with title {title:?}");
+    let _ = std::process::Command::new("osascript")
+        .arg("-e")
+        .arg(script)
+        .spawn();
+}
+
 fn main() {
     // Диагностика без GUI: один прогон пайплайна и выход.
     if std::env::args().any(|a| a == "--probe") {
         probe();
+        return;
+    }
+    // Логин из терминала (для теста).
+    if std::env::args().any(|a| a == "--login") {
+        match auth::login(&limits::client()) {
+            Ok(()) => println!("вход выполнен, токен в {}", auth::creds_path().display()),
+            Err(e) => println!("ошибка входа: {e}"),
+        }
         return;
     }
 
@@ -61,6 +79,7 @@ fn main() {
     let i_updated = MenuItem::new("Обновлено: —", false, None);
     let i_refresh = MenuItem::new("Обновить", true, None);
     let i_open = MenuItem::new("Открыть claude.ai/usage", true, None);
+    let i_login = MenuItem::new("Войти в Claude…", true, None);
     let i_quit = MenuItem::new("Выход", true, None);
 
     let menu = Menu::new();
@@ -74,6 +93,7 @@ fn main() {
     let _ = menu.append(&PredefinedMenuItem::separator());
     let _ = menu.append(&i_refresh);
     let _ = menu.append(&i_open);
+    let _ = menu.append(&i_login);
     let _ = menu.append(&PredefinedMenuItem::separator());
     let _ = menu.append(&i_quit);
 
@@ -86,6 +106,7 @@ fn main() {
 
     let id_refresh = i_refresh.id().clone();
     let id_open = i_open.id().clone();
+    let id_login = i_login.id().clone();
     let id_quit = i_quit.id().clone();
 
     // Клики по меню приходят в глобальный канал — пробрасываем их в цикл tao.
@@ -134,6 +155,17 @@ fn main() {
                     let _ = refresh_tx.send(());
                 } else if e.id == id_open {
                     let _ = std::process::Command::new("open").arg(USAGE_PAGE).spawn();
+                } else if e.id == id_login {
+                    // Логин блокирующий (браузер + локальный сервер) — в отдельном
+                    // потоке, чтобы не вешать цикл событий. По успеху — обновляем.
+                    let tx = refresh_tx.clone();
+                    std::thread::spawn(move || match auth::login(&limits::client()) {
+                        Ok(()) => {
+                            let _ = tx.send(());
+                            notify("Claude Usage", "Вход выполнен");
+                        }
+                        Err(err) => notify("Claude Usage — ошибка входа", &err),
+                    });
                 }
             }
             _ => {}
