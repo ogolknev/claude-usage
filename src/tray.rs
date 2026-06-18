@@ -29,6 +29,7 @@ pub struct MenuHandles<'a> {
     pub session: &'a MenuItem,
     pub weekly: &'a MenuItem,
     pub scoped: &'a MenuItem,
+    pub cost: &'a MenuItem,
     pub local: &'a MenuItem,
     pub updated: &'a MenuItem,
 }
@@ -51,6 +52,7 @@ pub fn apply_menu(s: &UsageState, h: &MenuHandles) {
             h.scoped.set_text("");
         }
     }
+    h.cost.set_text(cost_line(&s.local));
     h.local.set_text(local_line(&s.local));
     h.updated.set_text(match (&s.last_ok, &s.limits_err) {
         (Some(t), Some(err)) => format!("Обновлено: {} · {err}", t.format("%H:%M:%S")),
@@ -108,15 +110,27 @@ fn dur_str(mins: i64) -> String {
     }
 }
 
-fn local_line(u: &LocalUsage) -> String {
-    let cost = if crate::pricing::enabled() {
-        format!(" (~${:.2})", u.today_cost)
+/// Стоимость по официальным тарифам Anthropic (API-эквивалент; на подписке не платится).
+fn cost_line(u: &LocalUsage) -> String {
+    format!(
+        "Стоимость API-экв.: сегодня {} · неделя {}",
+        money(u.today_cost),
+        money(u.week_cost),
+    )
+}
+
+fn money(x: f64) -> String {
+    if x >= 100.0 {
+        format!("${:.0}", x)
     } else {
-        String::new()
-    };
+        format!("${:.2}", x)
+    }
+}
+
+fn local_line(u: &LocalUsage) -> String {
     // Основное — input+output; чтение кэша на порядки больше и показывается отдельно.
     format!(
-        "Расход вх+вых: сегодня {}{cost} · неделя {} · кэш сегодня {}",
+        "Токены вх+вых: сегодня {} · неделя {} · кэш сегодня {}",
         human_tokens(u.today_io),
         human_tokens(u.week_io),
         human_tokens(u.today_cache),

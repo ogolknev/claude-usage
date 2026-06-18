@@ -25,10 +25,11 @@ pub fn compute(home: &Path) -> LocalUsage {
     let mut files = Vec::new();
     collect_jsonl(&projects, cutoff, &mut files);
 
+    let prices = pricing::load();
     let mut u = LocalUsage::default();
     let mut seen: HashSet<String> = HashSet::new();
     for f in files {
-        accumulate_file(&f, w5h, w7d, today_start, &mut u, &mut seen);
+        accumulate_file(&f, w5h, w7d, today_start, &mut u, &mut seen, &prices);
     }
     u
 }
@@ -40,6 +41,7 @@ fn accumulate_file(
     today_start: DateTime<Utc>,
     u: &mut LocalUsage,
     seen: &mut HashSet<String>,
+    prices: &pricing::Prices,
 ) {
     let Ok(file) = fs::File::open(path) else {
         return;
@@ -78,6 +80,18 @@ fn accumulate_file(
         let out = field(usage, "output_tokens");
         let cw = field(usage, "cache_creation_input_tokens");
         let cr = field(usage, "cache_read_input_tokens");
+        // Запись кэша бывает 5-мин и 1-час (1-час вдвое дороже). Если разбивки
+        // в логе нет — считаем весь объём 5-минутным.
+        let (c5m, c1h) = usage
+            .get("cache_creation")
+            .map(|cc| {
+                (
+                    field(cc, "ephemeral_5m_input_tokens"),
+                    field(cc, "ephemeral_1h_input_tokens"),
+                )
+            })
+            .filter(|(a, b)| a + b > 0)
+            .unwrap_or((cw, 0));
         let io = inp + out;
         let cache = cw + cr;
         let model = message
@@ -85,7 +99,7 @@ fn accumulate_file(
             .and_then(|x| x.as_str())
             .or_else(|| v.get("model").and_then(|x| x.as_str()))
             .unwrap_or("");
-        let cost = pricing::cost(model, inp, out, cw, cr);
+        let cost = pricing::cost(prices, model, inp, out, c5m, c1h, cr);
 
         u.week_io += io;
         u.week_cache += cache;

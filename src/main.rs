@@ -29,6 +29,8 @@ const POLL_SECS: u64 = 180;
 const BACKOFF_MAX_SECS: u64 = 600;
 /// Локальный расход тяжелее опроса лимитов, поэтому считаем реже (раз в 5 циклов).
 const LOCAL_EVERY: u64 = 5;
+/// Обновление тарифов из LiteLLM — примерно раз в сутки (при POLL_SECS=180).
+const PRICE_REFRESH_EVERY: u64 = 480;
 
 enum UserEvent {
     State(Box<UsageState>),
@@ -54,7 +56,8 @@ fn main() {
     let i_session = MenuItem::new("Сессия (5ч): загрузка…", false, None);
     let i_weekly = MenuItem::new("Неделя: загрузка…", false, None);
     let i_scoped = MenuItem::new("Модельные лимиты: …", false, None);
-    let i_local = MenuItem::new("Расход: …", false, None);
+    let i_cost = MenuItem::new("Стоимость: …", false, None);
+    let i_local = MenuItem::new("Токены: …", false, None);
     let i_updated = MenuItem::new("Обновлено: —", false, None);
     let i_refresh = MenuItem::new("Обновить", true, None);
     let i_open = MenuItem::new("Открыть claude.ai/usage", true, None);
@@ -65,6 +68,7 @@ fn main() {
     let _ = menu.append(&i_weekly);
     let _ = menu.append(&i_scoped);
     let _ = menu.append(&PredefinedMenuItem::separator());
+    let _ = menu.append(&i_cost);
     let _ = menu.append(&i_local);
     let _ = menu.append(&i_updated);
     let _ = menu.append(&PredefinedMenuItem::separator());
@@ -117,6 +121,7 @@ fn main() {
                         session: &i_session,
                         weekly: &i_weekly,
                         scoped: &i_scoped,
+                        cost: &i_cost,
                         local: &i_local,
                         updated: &i_updated,
                     },
@@ -151,6 +156,10 @@ fn probe() {
     println!(
         "local вх+вых: today={} 5h={} week={} | кэш: today={} week={} (tok)",
         u.today_io, u.window5h_io, u.week_io, u.today_cache, u.week_cache
+    );
+    println!(
+        "стоимость (API-экв.): today=${:.2} week=${:.2}",
+        u.today_cost, u.week_cost
     );
 }
 
@@ -205,6 +214,10 @@ fn worker(proxy: EventLoopProxy<UserEvent>, refresh_rx: Receiver<()>) {
         };
         if proxy.send_event(UserEvent::State(Box::new(state))).is_err() {
             break; // цикл событий закрыт — выходим
+        }
+        // После первой отрисовки обновляем тарифы (не задерживая старт кольца).
+        if tick % PRICE_REFRESH_EVERY == 0 {
+            pricing::refresh(&client);
         }
         tick += 1;
 
