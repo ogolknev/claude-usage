@@ -76,5 +76,5 @@ fn read_secret() -> Result<Vec<u8>, String> {
             return Ok(data);
         }
     }
-    Err("креды Claude Code не найдены — залогинься в Claude Code".into())
+    Err("нет токена Claude Code — нужен Claude Code (CLI) с /login, не Claude Desktop".into())
 }

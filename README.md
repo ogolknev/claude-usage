@@ -27,7 +27,10 @@ brew install --cask ogolknev/tap/claude-usage
 > при ручной установке из `.dmg`, если Gatekeeper ругнётся:
 > `xattr -dr com.apple.quarantine "/Applications/Claude Usage.app"`.
 
-Требования: Apple Silicon, установленный и авторизованный Claude Code.
+Требования: Apple Silicon; **Claude Code (CLI)**, залогиненный через подписку
+(`claude` → `/login`). Именно Claude Code хранит OAuth-токен и пишет логи, из
+которых берутся лимиты и расход. Только Claude **Desktop** не подойдёт — у него
+другая авторизация и нет этих логов.
 
 ## Как это работает
 
