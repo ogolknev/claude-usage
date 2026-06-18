@@ -1,3 +1,4 @@
+mod cache;
 mod icon;
 mod keychain;
 mod limits;
@@ -23,8 +24,9 @@ const USAGE_PAGE: &str = "https://claude.ai/settings/usage";
 /// Базовый интервал опроса лимитов. Эндпоинт чувствителен к частоте (429),
 /// данные меняются небыстро — 3 минуты достаточно.
 const POLL_SECS: u64 = 180;
-/// Потолок экспоненциального бэкоффа при 429 — 30 минут.
-const BACKOFF_MAX_SECS: u64 = 1800;
+/// Потолок экспоненциального бэкоффа при 429 — 10 минут (баланс «не долбить» и
+/// «не ждать слишком долго восстановления»). «Обновить» в меню сбрасывает его.
+const BACKOFF_MAX_SECS: u64 = 600;
 /// Локальный расход тяжелее опроса лимитов, поэтому считаем реже (раз в 5 циклов).
 const LOCAL_EVERY: u64 = 5;
 
@@ -161,14 +163,22 @@ fn worker(proxy: EventLoopProxy<UserEvent>, refresh_rx: Receiver<()>) {
     let mut last_good: Option<model::Limits> = None;
     let mut backoff = POLL_SECS;
 
+    // Поднимаем кольцо из кэша сразу — даже если первый запрос упадёт в 429.
+    if let Some((l, at)) = cache::load() {
+        last_good = Some(l);
+        last_ok = Some(at);
+    }
+
     loop {
         let result = limits::fetch(&client);
         let mut wait = POLL_SECS;
         match &result {
             Ok(l) => {
+                let now = chrono::Local::now();
                 last_good = Some(l.clone());
-                last_ok = Some(chrono::Local::now());
+                last_ok = Some(now);
                 backoff = POLL_SECS;
+                cache::save(l, now);
             }
             Err(e) if e.rate_limited => {
                 // При 429 уважаем Retry-After, иначе растущий бэкофф — чтобы не

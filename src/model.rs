@@ -1,7 +1,8 @@
 use chrono::{DateTime, Local, Utc};
+use serde::{Deserialize, Serialize};
 
 /// Одна строка лимита из ответа `/api/oauth/usage` (поле `limits[]`).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LimitEntry {
     /// Тип лимита из API (session/weekly_all/weekly_scoped) — для отладки/группировки.
     #[allow(dead_code)]
@@ -14,7 +15,7 @@ pub struct LimitEntry {
     pub severity: String,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Limits {
     pub entries: Vec<LimitEntry>,
     pub session: Option<LimitEntry>,
