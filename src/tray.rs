@@ -12,7 +12,8 @@ pub fn session_percent(s: &UsageState) -> Option<f64> {
 /// При недоступности API — деградирует к токенам за 5ч из локальных логов.
 pub fn title_for(s: &UsageState) -> String {
     match session_percent(s) {
-        Some(p) => format!("{}%", round(p)),
+        // Формат как у индикатора заряда батареи в строке меню: «NN %».
+        Some(p) => format!("{} %", round(p)),
         None => format!("⌁ {}", human_tokens(s.local.window5h_tokens)),
     }
 }

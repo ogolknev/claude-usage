@@ -9,8 +9,9 @@ const N: i32 = 44; // сторона в пикселях; масштабируе
 pub fn ring_rgba(percent: f64) -> (Vec<u8>, u32, u32) {
     let nf = N as f32;
     let c = nf / 2.0;
-    let r_out = nf * 0.42;
-    let r_in = nf * 0.27;
+    // Кольцо почти во всю высоту слота (~18pt у tray-icon) и потолще.
+    let r_out = nf * 0.47;
+    let r_in = nf * 0.31;
     let frac = (percent.clamp(0.0, 100.0) as f32) / 100.0;
 
     let (pr, pg, pb) = progress_color(percent);
@@ -51,14 +52,31 @@ pub fn ring_rgba(percent: f64) -> (Vec<u8>, u32, u32) {
     (buf, N as u32, N as u32)
 }
 
+/// Плавный градиент по заполнению: зелёный (0%) → жёлтый → красный (100%).
 fn progress_color(percent: f64) -> (u8, u8, u8) {
-    if percent >= 80.0 {
-        (255, 69, 58) // red
-    } else if percent >= 50.0 {
-        (255, 159, 10) // orange
-    } else {
-        (48, 209, 88) // green
-    }
+    let t = (percent.clamp(0.0, 100.0) / 100.0) as f32;
+    let hue = 130.0 * (1.0 - t); // 130° зелёный → 0° красный
+    hsv_to_rgb(hue, 0.85, 0.95)
+}
+
+fn hsv_to_rgb(h: f32, s: f32, v: f32) -> (u8, u8, u8) {
+    let c = v * s;
+    let hp = h / 60.0;
+    let x = c * (1.0 - (hp % 2.0 - 1.0).abs());
+    let (r, g, b) = match hp as i32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    let m = v - c;
+    (
+        ((r + m) * 255.0).round() as u8,
+        ((g + m) * 255.0).round() as u8,
+        ((b + m) * 255.0).round() as u8,
+    )
 }
 
 fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
