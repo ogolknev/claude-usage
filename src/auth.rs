@@ -8,15 +8,17 @@
 use crate::keychain::{Creds, Source};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde::Deserialize;
-use std::io::{Read, Write};
-use std::net::TcpListener;
+use std::io::Read;
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
 
 const CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
-const AUTHORIZE_URL: &str = "https://platform.claude.com/oauth/authorize";
+const AUTHORIZE_URL: &str = "https://claude.ai/oauth/authorize";
 const TOKEN_URL: &str = "https://platform.claude.com/v1/oauth/token";
-const SCOPE: &str = "org:create_api_key user:profile user:inference";
+// Ручной флоу подписки: после авторизации страница показывает код для вставки.
+const MANUAL_REDIRECT: &str = "https://platform.claude.com/oauth/code/callback";
+// Scope подписочного логина. ВАЖНО: без `org:create_api_key` — это org/console
+// scope, и с ним claude.ai отвергает грант подписки («Invalid request format»).
+const SCOPE: &str = "user:inference user:profile user:sessions:claude_code user:mcp_servers";
 
 pub fn creds_path() -> PathBuf {
     PathBuf::from(std::env::var("HOME").unwrap_or_default())
@@ -30,7 +32,9 @@ struct TokenResp {
     expires_in: Option<i64>,
 }
 
-/// Полный интерактивный логин: браузер + локальный колбэк + обмен кода.
+/// Ручной флоу подписки (как у рабочих реализаций Claude Code OAuth): браузер →
+/// страница показывает код `code#state` → пользователь вставляет его в диалог →
+/// обмен на токен.
 pub fn login(client: &reqwest::blocking::Client) -> Result<(), String> {
     let verifier = b64url(&rand_bytes(32));
     let state = b64url(&rand_bytes(16));
@@ -41,13 +45,10 @@ pub fn login(client: &reqwest::blocking::Client) -> Result<(), String> {
         b64url(&h.finalize())
     };
 
-    let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| format!("listen: {e}"))?;
-    let port = listener.local_addr().map_err(|e| e.to_string())?.port();
-    let redirect = format!("http://localhost:{port}/callback");
-
+    // Ручной флоу: code=true + manual-redirect (страница покажет код).
     let url = format!(
-        "{AUTHORIZE_URL}?client_id={CLIENT_ID}&response_type=code&redirect_uri={}&scope={}&code_challenge={}&code_challenge_method=S256&state={}",
-        enc(&redirect),
+        "{AUTHORIZE_URL}?code=true&client_id={CLIENT_ID}&response_type=code&redirect_uri={}&scope={}&code_challenge={}&code_challenge_method=S256&state={}",
+        enc(MANUAL_REDIRECT),
         enc(SCOPE),
         challenge,
         enc(&state),
@@ -57,22 +58,29 @@ pub fn login(client: &reqwest::blocking::Client) -> Result<(), String> {
         .spawn()
         .map_err(|e| format!("открыть браузер: {e}"))?;
 
-    let (code, got_state) = wait_callback(&listener)?;
-    if got_state != state {
+    let pasted = prompt_code().ok_or("вход отменён")?;
+    let pasted = pasted.trim();
+    // Страница отдаёт код в формате `code#state`.
+    let (code, ret_state) = match pasted.split_once('#') {
+        Some((c, s)) => (c.to_string(), s.to_string()),
+        None => (pasted.to_string(), state.clone()),
+    };
+    if ret_state != state {
         return Err("state не совпал (возможна подмена)".into());
     }
 
-    let body = serde_json::json!({
-        "grant_type": "authorization_code",
-        "code": code,
-        "redirect_uri": redirect,
-        "client_id": CLIENT_ID,
-        "code_verifier": verifier,
-        "state": state,
-    });
+    // Обмен — application/x-www-form-urlencoded (JSON тут вызывает проблемы).
+    let form = [
+        ("grant_type", "authorization_code"),
+        ("code", code.as_str()),
+        ("redirect_uri", MANUAL_REDIRECT),
+        ("client_id", CLIENT_ID),
+        ("code_verifier", verifier.as_str()),
+        ("state", state.as_str()),
+    ];
     let resp = client
         .post(TOKEN_URL)
-        .json(&body)
+        .form(&form)
         .send()
         .map_err(|e| format!("обмен кода: {e}"))?;
     if !resp.status().is_success() {
@@ -83,16 +91,31 @@ pub fn login(client: &reqwest::blocking::Client) -> Result<(), String> {
     Ok(())
 }
 
+/// Диалог для вставки кода (osascript). None — отмена.
+fn prompt_code() -> Option<String> {
+    let script = "display dialog \"Авторизуйся в браузере, затем вставь сюда показанный код:\" default answer \"\" with title \"Claude Usage — вход\"";
+    let out = std::process::Command::new("osascript")
+        .arg("-e")
+        .arg(script)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout);
+    s.split("text returned:").nth(1).map(|x| x.trim().to_string())
+}
+
 /// Рефреш нашего токена (Claude Code тут нет, обновляем сами).
 pub fn refresh(client: &reqwest::blocking::Client, refresh_token: &str) -> Result<Creds, String> {
-    let body = serde_json::json!({
-        "grant_type": "refresh_token",
-        "refresh_token": refresh_token,
-        "client_id": CLIENT_ID,
-    });
+    let form = [
+        ("grant_type", "refresh_token"),
+        ("refresh_token", refresh_token),
+        ("client_id", CLIENT_ID),
+    ];
     let resp = client
         .post(TOKEN_URL)
-        .json(&body)
+        .form(&form)
         .send()
         .map_err(|e| format!("рефреш: {e}"))?;
     if !resp.status().is_success() {
@@ -130,57 +153,6 @@ fn expires_at(seconds: i64) -> i64 {
     chrono::Utc::now().timestamp_millis() + seconds * 1000
 }
 
-/// Ждём GET /callback?code=…&state=… на локальном сервере (до 3 минут).
-fn wait_callback(listener: &TcpListener) -> Result<(String, String), String> {
-    listener.set_nonblocking(true).ok();
-    let deadline = Instant::now() + Duration::from_secs(180);
-    loop {
-        match listener.accept() {
-            Ok((mut stream, _)) => {
-                let mut buf = [0u8; 4096];
-                let n = stream.read(&mut buf).unwrap_or(0);
-                let req = String::from_utf8_lossy(&buf[..n]);
-                let path = req
-                    .lines()
-                    .next()
-                    .and_then(|l| l.split_whitespace().nth(1))
-                    .unwrap_or("");
-                let html = "<html><body style='font-family:sans-serif'>Готово — можно закрыть это окно и вернуться в Claude Usage.</body></html>";
-                let _ = stream.write_all(
-                    format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                        html.len(),
-                        html
-                    )
-                    .as_bytes(),
-                );
-                let (mut code, mut state) = (None, None);
-                if let Some(q) = path.split('?').nth(1) {
-                    for kv in q.split('&') {
-                        let mut it = kv.splitn(2, '=');
-                        match (it.next().unwrap_or(""), it.next().unwrap_or("")) {
-                            ("code", v) => code = Some(dec(v)),
-                            ("state", v) => state = Some(dec(v)),
-                            _ => {}
-                        }
-                    }
-                }
-                return match (code, state) {
-                    (Some(c), Some(s)) => Ok((c, s)),
-                    _ => Err("в колбэке нет code/state (вход отменён?)".into()),
-                };
-            }
-            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                if Instant::now() > deadline {
-                    return Err("истекло время ожидания входа".into());
-                }
-                std::thread::sleep(Duration::from_millis(200));
-            }
-            Err(e) => return Err(format!("accept: {e}")),
-        }
-    }
-}
-
 fn rand_bytes(n: usize) -> Vec<u8> {
     let mut b = vec![0u8; n];
     if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
@@ -193,7 +165,8 @@ fn b64url(data: &[u8]) -> String {
     URL_SAFE_NO_PAD.encode(data)
 }
 
-/// Перкодирование значения query: всё, кроме unreserved, в %XX.
+/// Кодирование значения query как у URLSearchParams (пробел → `+`, остальное
+/// не-unreserved → %XX). Важно совпасть с форматом Claude Code.
 fn enc(s: &str) -> String {
     let mut out = String::with_capacity(s.len() * 3);
     for &b in s.as_bytes() {
@@ -201,37 +174,10 @@ fn enc(s: &str) -> String {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
                 out.push(b as char)
             }
+            b' ' => out.push('+'),
             _ => out.push_str(&format!("%{b:02X}")),
         }
     }
     out
 }
 
-fn dec(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'%' if i + 2 < bytes.len() => {
-                let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or("");
-                if let Ok(v) = u8::from_str_radix(hex, 16) {
-                    out.push(v);
-                    i += 3;
-                    continue;
-                }
-                out.push(b'%');
-                i += 1;
-            }
-            b'+' => {
-                out.push(b' ');
-                i += 1;
-            }
-            c => {
-                out.push(c);
-                i += 1;
-            }
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
