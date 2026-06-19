@@ -8,17 +8,17 @@
 use crate::keychain::{Creds, Source};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde::Deserialize;
-use std::io::Read;
+use std::io::{Read, Write};
+use std::net::TcpListener;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 const CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
-const AUTHORIZE_URL: &str = "https://claude.ai/oauth/authorize";
+// CLAUDE_AI_AUTHORIZE_URL из Claude Code: вход через claude.com/cai (307 → claude.ai).
+const AUTHORIZE_URL: &str = "https://claude.com/cai/oauth/authorize";
 const TOKEN_URL: &str = "https://platform.claude.com/v1/oauth/token";
-// Ручной флоу подписки: после авторизации страница показывает код для вставки.
-const MANUAL_REDIRECT: &str = "https://platform.claude.com/oauth/code/callback";
-// Scope подписочного логина. ВАЖНО: без `org:create_api_key` — это org/console
-// scope, и с ним claude.ai отвергает грант подписки («Invalid request format»).
-const SCOPE: &str = "user:inference user:profile user:sessions:claude_code user:mcp_servers";
+// Полный scope U68 — ровно как у Claude Code (buildAuthUrl, ветка не-inferenceOnly).
+const SCOPE: &str = "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload";
 
 pub fn creds_path() -> PathBuf {
     PathBuf::from(std::env::var("HOME").unwrap_or_default())
@@ -32,9 +32,8 @@ struct TokenResp {
     expires_in: Option<i64>,
 }
 
-/// Ручной флоу подписки (как у рабочих реализаций Claude Code OAuth): браузер →
-/// страница показывает код `code#state` → пользователь вставляет его в диалог →
-/// обмен на токен.
+/// localhost-флоу (как у Claude Code): браузер → авторизация → редирект на
+/// http://localhost:PORT/callback с кодом → локальный сервер ловит → обмен.
 pub fn login(client: &reqwest::blocking::Client) -> Result<(), String> {
     let verifier = b64url(&rand_bytes(32));
     let state = b64url(&rand_bytes(16));
@@ -45,10 +44,13 @@ pub fn login(client: &reqwest::blocking::Client) -> Result<(), String> {
         b64url(&h.finalize())
     };
 
-    // Ручной флоу: code=true + manual-redirect (страница покажет код).
+    let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| format!("listen: {e}"))?;
+    let port = listener.local_addr().map_err(|e| e.to_string())?.port();
+    let redirect = format!("http://localhost:{port}/callback");
+
     let url = format!(
         "{AUTHORIZE_URL}?code=true&client_id={CLIENT_ID}&response_type=code&redirect_uri={}&scope={}&code_challenge={}&code_challenge_method=S256&state={}",
-        enc(MANUAL_REDIRECT),
+        enc(&redirect),
         enc(SCOPE),
         challenge,
         enc(&state),
@@ -58,22 +60,15 @@ pub fn login(client: &reqwest::blocking::Client) -> Result<(), String> {
         .spawn()
         .map_err(|e| format!("открыть браузер: {e}"))?;
 
-    let pasted = prompt_code().ok_or("вход отменён")?;
-    let pasted = pasted.trim();
-    // Страница отдаёт код в формате `code#state`.
-    let (code, ret_state) = match pasted.split_once('#') {
-        Some((c, s)) => (c.to_string(), s.to_string()),
-        None => (pasted.to_string(), state.clone()),
-    };
-    if ret_state != state {
+    let (code, got_state) = wait_callback(&listener)?;
+    if got_state != state {
         return Err("state не совпал (возможна подмена)".into());
     }
 
-    // Обмен — application/x-www-form-urlencoded (JSON тут вызывает проблемы).
     let form = [
         ("grant_type", "authorization_code"),
         ("code", code.as_str()),
-        ("redirect_uri", MANUAL_REDIRECT),
+        ("redirect_uri", redirect.as_str()),
         ("client_id", CLIENT_ID),
         ("code_verifier", verifier.as_str()),
         ("state", state.as_str()),
@@ -91,19 +86,55 @@ pub fn login(client: &reqwest::blocking::Client) -> Result<(), String> {
     Ok(())
 }
 
-/// Диалог для вставки кода (osascript). None — отмена.
-fn prompt_code() -> Option<String> {
-    let script = "display dialog \"Авторизуйся в браузере, затем вставь сюда показанный код:\" default answer \"\" with title \"Claude Usage — вход\"";
-    let out = std::process::Command::new("osascript")
-        .arg("-e")
-        .arg(script)
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
+/// Ждём GET /callback?code=…&state=… на локальном сервере (до 3 минут).
+fn wait_callback(listener: &TcpListener) -> Result<(String, String), String> {
+    listener.set_nonblocking(true).ok();
+    let deadline = Instant::now() + Duration::from_secs(180);
+    loop {
+        match listener.accept() {
+            Ok((mut stream, _)) => {
+                let mut buf = [0u8; 4096];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]);
+                let path = req
+                    .lines()
+                    .next()
+                    .and_then(|l| l.split_whitespace().nth(1))
+                    .unwrap_or("");
+                let html = "<html><body style='font-family:sans-serif'>Готово — можно закрыть это окно и вернуться в Claude Usage.</body></html>";
+                let _ = stream.write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        html.len(),
+                        html
+                    )
+                    .as_bytes(),
+                );
+                let (mut code, mut state) = (None, None);
+                if let Some(qs) = path.split('?').nth(1) {
+                    for kv in qs.split('&') {
+                        let mut it = kv.splitn(2, '=');
+                        match (it.next().unwrap_or(""), it.next().unwrap_or("")) {
+                            ("code", v) => code = Some(v.to_string()),
+                            ("state", v) => state = Some(v.to_string()),
+                            _ => {}
+                        }
+                    }
+                }
+                return match (code, state) {
+                    (Some(c), Some(s)) => Ok((c, s)),
+                    _ => Err("в колбэке нет code/state (вход отменён?)".into()),
+                };
+            }
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                if Instant::now() > deadline {
+                    return Err("истекло время ожидания входа".into());
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            Err(e) => return Err(format!("accept: {e}")),
+        }
     }
-    let s = String::from_utf8_lossy(&out.stdout);
-    s.split("text returned:").nth(1).map(|x| x.trim().to_string())
 }
 
 /// Рефреш нашего токена (Claude Code тут нет, обновляем сами).
