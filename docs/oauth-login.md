@@ -23,26 +23,40 @@
 - Консент рисуется корректно («Claude Code would like to connect to your Claude
   chat account», нужные скоупы).
 
-## Блокер
+## Блокер (РАЗГАДАН по HAR)
 
-На шаге **гранта** (после нажатия Authorize) claude.ai стабильно отвечает
-`Invalid request format` (видно в консоли: `[REACT_QUERY_CLIENT] QueryClient error:
-Error: Invalid request format`). Так падают ВСЕ комбинации, включая ту, что
-используют рабочие сторонние реализации (manual + `code=true` + scope без
-`org:create_api_key` + form-обмен). Наш authorize-URL побайтово совпадает с
-URL, который генерирует сам Claude Code (сверено).
+Сам грант делает не Claude Code, а **браузер** (React-фронт claude.ai). По клику
+Authorize фронт шлёт:
 
-## Гипотезы
+```
+POST https://claude.ai/v1/oauth/{organization_uuid}/authorize   (Content-Type: application/json)
+{
+  "response_type":"code", "client_id":"9d1c250a-...",
+  "organization_uuid":"...", "redirect_uri":"...",
+  "scope":"user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload",  // org:create_api_key фронт ВЫКИДЫВАЕТ
+  "state":"...", "code_challenge":"...", "code_challenge_method":"S256",
+  "arkose_session_token":"...|pk=EEA5F558-D6AC-4C03-B678-AABF639EE69A|..."   // Arkose Labs (FunCaptcha)
+}
+```
 
-1. claude.ai недавно поменял подписочный OAuth — сторонние реализации сломались.
-2. Soft-block/rate-limit после множества попыток (нельзя долбить — риск бана).
+Ответ при наших попытках: `400 {"type":"invalid_request_error","message":"Invalid request format"}`.
 
-## Единственный надёжный следующий шаг
+**Грант огорожен Arkose Labs (FunCaptcha) — антибот-защитой.** `arkose_session_token`
+генерит JS claude.ai в браузере. Claude Code и наше приложение делают одно и то
+же: открывают браузер, пользователь авторизуется (браузер сам проходит Arkose),
+приложение получает код. Копировать в коде Claude Code нечего — грант браузерный.
 
-Перехватить **реальный успешный грант-запрос самого Claude Code** (`/login`):
-DevTools → Network на POST, который шлёт страница консента при Authorize, ИЛИ
-mitmproxy на трафике Claude Code. Снять точный URL, payload и заголовки гранта и
-сдиффить с нашим. Без этого — гадание.
+Тело запроса было полным и валидным, поэтому «Invalid request format» здесь —
+это, скорее всего, **антибот зафлагал сессию/IP** после ~20 быстрых попыток.
+
+## Вывод
+
+- Флоу в принципе делегируется браузеру и **мог бы сработать** на чистой
+  (не зафлаганной) сессии — приложение получает код после успешного гранта.
+- Но это упирается в их антибот (Arkose) + серую зону ToS. Долбить = риск бана.
+  Обходить капчу нельзя и не нужно.
+- Практический вывод: в продукт логин не тащим. Кому нужно без Claude Code —
+  путь только официальный (Claude Code `/login`).
 
 ## Важное
 
