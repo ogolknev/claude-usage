@@ -20,9 +20,19 @@ cp "bundle/Info.plist" "$APP/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP/Contents/Info.plist" >/dev/null 2>&1 || true
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION" "$APP/Contents/Info.plist" >/dev/null 2>&1 || true
 
-# Ad-hoc подпись. Доступ к Keychain не зависит от неё: токен читается через
-# системный /usr/bin/security, которому доступ выдаётся один раз и навсегда.
-codesign --force --sign - --identifier com.local.claude-usage "$APP" || true
+# Подписываем стабильным самоподписанным сертификатом (не ad-hoc): его designated
+# requirement = identifier + cert leaf, неизменный между сборками. Это нужно, чтобы
+# Keychain-ACL нашего OAuth-токена (security-framework, app-bound) переживал
+# обновления приложения без повторных промптов. Сертификат «Claude Usage Signing»
+# должен лежать в login-keychain сборочной машины (как создать — docs/oauth-login.md).
+# Если его нет — фолбэк на ad-hoc (тогда после апдейта будет разовый промпт).
+SIGN_ID="${SIGN_ID:-Claude Usage Signing}"
+if security find-identity -p codesigning 2>/dev/null | grep -q "$SIGN_ID"; then
+  codesign --force --sign "$SIGN_ID" --identifier com.local.claude-usage "$APP"
+else
+  echo "⚠ нет сертификата «$SIGN_ID» — подпись ad-hoc (keychain-ACL не переживёт апдейт)"
+  codesign --force --sign - --identifier com.local.claude-usage "$APP" || true
+fi
 
 echo "Готово: $ROOT/$APP"
 echo "Запуск:  open \"$ROOT/$APP\""

@@ -60,8 +60,38 @@ fn main() {
     // Логин из терминала (для теста).
     if std::env::args().any(|a| a == "--login") {
         match auth::login(&limits::client()) {
-            Ok(()) => println!("вход выполнен, токен в {}", auth::creds_path().display()),
+            Ok(()) => println!("вход выполнен, токен в Keychain ({})", auth::KEYCHAIN_SERVICE),
             Err(e) => println!("ошибка входа: {e}"),
+        }
+        return;
+    }
+    // Диагностика: какой токен видим и откуда.
+    if std::env::args().any(|a| a == "--check") {
+        match keychain::read_creds() {
+            Ok(c) => {
+                let src = match c.source {
+                    keychain::Source::ClaudeCode => "Claude Code",
+                    keychain::Source::Ours => "наш (Keychain/файл)",
+                };
+                let mask: String = c.access_token.chars().take(14).collect();
+                println!(
+                    "источник: {src}; токен: {mask}…; истёк: {}; expiresAt: {:?}",
+                    c.is_expired(),
+                    c.expires_at_ms
+                );
+            }
+            Err(e) => println!("нет токена: {e}"),
+        }
+        match security_framework::passwords::get_generic_password(
+            auth::KEYCHAIN_SERVICE,
+            auth::KEYCHAIN_ACCOUNT,
+        ) {
+            Ok(d) => println!(
+                "наш Keychain: {} байт, JSON ok: {}",
+                d.len(),
+                serde_json::from_slice::<serde_json::Value>(&d).is_ok()
+            ),
+            Err(_) => println!("наш Keychain: пусто"),
         }
         return;
     }

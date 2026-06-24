@@ -19,6 +19,9 @@ const AUTHORIZE_URL: &str = "https://claude.com/cai/oauth/authorize";
 const TOKEN_URL: &str = "https://platform.claude.com/v1/oauth/token";
 // Полный scope U68 — ровно как у Claude Code (buildAuthUrl, ветка не-inferenceOnly).
 const SCOPE: &str = "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload";
+// Свой токен храним в Keychain (как Claude Code), читаем оттуда же (keychain.rs).
+pub const KEYCHAIN_SERVICE: &str = "claude-usage-credentials";
+pub const KEYCHAIN_ACCOUNT: &str = "claude-usage";
 
 pub fn creds_path() -> PathBuf {
     PathBuf::from(std::env::var("HOME").unwrap_or_default())
@@ -36,7 +39,7 @@ struct TokenResp {
 /// http://localhost:PORT/callback с кодом → локальный сервер ловит → обмен.
 pub fn login(client: &reqwest::blocking::Client) -> Result<(), String> {
     let verifier = b64url(&rand_bytes(32));
-    let state = b64url(&rand_bytes(16));
+    let state = b64url(&rand_bytes(32));
     let challenge = {
         use sha2::{Digest, Sha256};
         let mut h = Sha256::new();
@@ -172,12 +175,20 @@ fn save(access: &str, refresh: Option<&str>, expires_in: Option<i64>) -> Result<
             "expiresAt": expires_in.map(expires_at),
         }
     });
-    let path = creds_path();
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| format!("mkdir: {e}"))?;
-    }
-    std::fs::write(&path, blob.to_string()).map_err(|e| format!("запись: {e}"))?;
+    keychain_write(&blob.to_string())?;
+    // Миграция со старых версий: убрать плейнтекст-файл, если остался.
+    let _ = std::fs::remove_file(creds_path());
     Ok(())
+}
+
+/// Пишем секрет в Keychain через Security framework (`SecItem*`): значение идёт
+/// в процессе, без argv-засветки и без 128-символьного лимита интерактивного
+/// `security`. Перезаписываем: убираем прежнюю запись (если есть), кладём новую.
+fn keychain_write(secret: &str) -> Result<(), String> {
+    use security_framework::passwords::{delete_generic_password, set_generic_password};
+    let _ = delete_generic_password(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT);
+    set_generic_password(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT, secret.as_bytes())
+        .map_err(|e| format!("keychain: {e}"))
 }
 
 fn expires_at(seconds: i64) -> i64 {

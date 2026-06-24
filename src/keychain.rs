@@ -59,7 +59,8 @@ const SERVICE: &str = "Claude Code-credentials";
 /// Ищем токен по приоритету:
 /// 1) Keychain Claude Code (через системный `/usr/bin/security`);
 /// 2) файл Claude Code `~/.claude/.credentials.json`;
-/// 3) наш файл (логин внутри приложения).
+/// 3) наш Keychain (логин внутри приложения);
+/// 4) наш старый плейнтекст-файл (миграция со старых версий).
 fn read_secret() -> Result<(Vec<u8>, Source), String> {
     if let Ok(out) = std::process::Command::new("/usr/bin/security")
         .args(["find-generic-password", "-s", SERVICE, "-w"])
@@ -81,6 +82,15 @@ fn read_secret() -> Result<(Vec<u8>, Source), String> {
     if let Ok(data) = std::fs::read(&cc_file) {
         if !data.is_empty() {
             return Ok((data, Source::ClaudeCode));
+        }
+    }
+
+    if let Ok(data) = security_framework::passwords::get_generic_password(
+        crate::auth::KEYCHAIN_SERVICE,
+        crate::auth::KEYCHAIN_ACCOUNT,
+    ) {
+        if !data.is_empty() {
+            return Ok((data, Source::Ours));
         }
     }
 
